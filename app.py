@@ -13,6 +13,7 @@ import platform
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Tuple, List, Dict, Optional
 
 # Try to import PyMuPDF (fitz), provide fallback error message
 try:
@@ -130,7 +131,7 @@ class PDFManager:
         except Exception as e:
             logger.error(f"Error cleaning up temp directory: {str(e)}")
     
-    def load_pdf_files(self, file_paths: list) -> tuple[bool, str]:
+    def load_pdf_files(self, file_paths: list) -> Tuple[bool, str]:
         """
         Load multiple PDF files
         
@@ -260,7 +261,7 @@ class PDFManager:
             pdf_name = os.path.basename(removed[2])
             self.log(f"Removed page {removed[1] + 1} from {pdf_name}")
     
-    def merge_pdfs(self, output_path: str) -> tuple[bool, str]:
+    def merge_pdfs(self, output_path: str) -> Tuple[bool, str]:
         """
         Merge all loaded PDFs according to current page order
         
@@ -309,7 +310,7 @@ class PDFManager:
             self.log(f"Error merging PDFs: {str(e)}", logging.ERROR)
             return False, f"Error merging PDFs: {str(e)}"
     
-    def print_pdf(self, pdf_path: str) -> tuple[bool, str]:
+    def print_pdf(self, pdf_path: str) -> Tuple[bool, str]:
         """
         Print a PDF file using the system's default print mechanism
         
@@ -321,6 +322,17 @@ class PDFManager:
         """
         if not os.path.exists(pdf_path):
             return False, f"File not found: {pdf_path}"
+        
+        # Validate the file path is within allowed directories (temp dir or loaded PDFs)
+        abs_path = os.path.abspath(pdf_path)
+        is_valid_path = (
+            abs_path.startswith(self.temp_dir) or
+            abs_path in [os.path.abspath(p) for p in self.loaded_pdfs]
+        )
+        
+        if not is_valid_path:
+            self.log(f"Security: Attempted to print file outside allowed paths: {abs_path}", logging.WARNING)
+            return False, "Cannot print file: path not in allowed directories"
         
         self.log(f"Printing: {os.path.basename(pdf_path)}...")
         
@@ -704,8 +716,11 @@ def main(page: ft.Page):
     
     page.on_close = on_window_close
     
-    # Function definitions with metadata for future extensibility
-    functions = {
+    # Function definitions with metadata for future extensibility.
+    # This dictionary documents available and planned functions.
+    # Used with storage.record_function_usage() to track usage patterns.
+    # Can be expanded for a dropdown selector similar to CABB pattern.
+    available_functions = {
         "open_pdfs": {
             "label": "Open PDF Files",
             "icon": "📂",
@@ -807,7 +822,7 @@ def main(page: ft.Page):
                     ft.Container(
                         content=ft.Column([
                             ft.Row([
-                                ft.Text("Page Order (Drag to Reorder)", size=16, weight=ft.FontWeight.BOLD, expand=True),
+                                ft.Text("Page Order", size=16, weight=ft.FontWeight.BOLD, expand=True),
                                 ft.Text(f"{len(pdf_manager.pdf_pages)} pages", size=12, color=ft.Colors.GREY_600),
                             ]),
                             ft.Container(
