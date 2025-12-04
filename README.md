@@ -36,6 +36,7 @@ PDFUtils/
 ├── requirements.txt    # Python dependencies
 ├── run.sh              # Quick launch script (Linux/macOS)
 ├── assets/             # Static assets directory
+├── logfiles/           # Application log files directory
 ├── .gitignore          # Git ignore rules
 ├── LICENSE             # License file
 └── README.md           # This file
@@ -124,9 +125,11 @@ The "Page Order" section shows all pages from all loaded PDFs:
 ## Dependencies
 
 See `requirements.txt` for complete list:
-- `flet>=0.28.0` - UI framework
+- `flet==0.28.2` - UI framework (pinned to 0.28.2 for macOS compatibility)
 - `PyMuPDF>=1.24.0` - PDF handling library
 - `python-dotenv>=1.0.0` - Environment variable management
+
+**Note:** Flet is pinned to version 0.28.2 due to known issues with file picker dialogs on macOS in newer versions.
 
 ## Architecture
 
@@ -163,7 +166,7 @@ To add new PDF operations:
 
 ### Logging
 
-- Logs are written to timestamped files: `pdfutils_YYYYMMDD_HHMMSS.log`
+- Logs are written to timestamped files in the `logfiles/` directory: `logfiles/pdfutils_YYYYMMDD_HHMMSS.log`
 - The log output window in the UI shows real-time operation details
 - Set `logging.DEBUG` for verbose output during development
 
@@ -185,7 +188,8 @@ To add new PDF operations:
 - Look at the log output for error messages
 
 ### Print not working
-- **Linux/macOS**: Ensure `lpr` is installed and configured
+- **macOS**: PDFs open in Preview for printing with full print dialog access
+- **Linux**: Ensure `lpr` is installed and configured
 - **Windows**: PDF should open in the default PDF viewer with print dialog
 - Check that you have a printer configured on your system
 

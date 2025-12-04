@@ -23,7 +23,12 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
 
 # Configure logging
-log_filename = f"pdfutils_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+# Ensure logfiles directory exists
+log_dir = "logfiles"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+log_filename = os.path.join(log_dir, f"pdfutils_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -345,12 +350,19 @@ class PDFManager:
                 return True, f"Sent to print: {os.path.basename(pdf_path)}"
                 
             elif system == "Darwin":  # macOS
-                # Use lpr command on macOS
-                result = subprocess.run(["lpr", pdf_path], capture_output=True, text=True)
+                # Open in Preview with print dialog
+                # Using 'open' with Preview allows the user to see print dialog
+                result = subprocess.run(["open", "-a", "Preview", pdf_path], capture_output=True, text=True)
                 if result.returncode == 0:
-                    return True, f"Sent to print: {os.path.basename(pdf_path)}"
+                    return True, f"Opened in Preview for printing: {os.path.basename(pdf_path)}"
                 else:
-                    return False, f"Print failed: {result.stderr}"
+                    self.log(f"Preview open failed, trying lpr: {result.stderr}", logging.WARNING)
+                    # Fallback to lpr if Preview fails
+                    result = subprocess.run(["lpr", pdf_path], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        return True, f"Sent to print: {os.path.basename(pdf_path)}"
+                    else:
+                        return False, f"Print failed: {result.stderr}"
                     
             else:  # Linux
                 # Use lpr command on Linux
