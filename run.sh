@@ -15,16 +15,31 @@ echo "=================================="
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
-# Check if Python 3 is installed
-if ! command -v python3 &> /dev/null; then
+# Use Python 3.11 if available, otherwise fall back to python3
+if command -v python3.11 &> /dev/null; then
+    PYTHON_CMD="python3.11"
+elif command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+    # Check if python3 version is at least 3.9
+    PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
+    PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+    PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+    if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 9 ]); then
+        echo -e "${RED}Error: Python 3.9 or later is required, but found $PYTHON_VERSION${NC}"
+        echo -e "${YELLOW}Tip: Install Python 3.9+ or use: python3.11 -m venv .venv${NC}"
+        exit 1
+    fi
+else
     echo -e "${RED}Error: Python 3 is not installed${NC}"
     exit 1
 fi
 
+echo -e "${YELLOW}Using Python: $($PYTHON_CMD --version)${NC}"
+
 # Create virtual environment if it doesn't exist
 if [ ! -d ".venv" ]; then
     echo -e "${YELLOW}Creating virtual environment...${NC}"
-    python3 -m venv .venv
+    $PYTHON_CMD -m venv .venv
     if [ $? -ne 0 ]; then
         echo -e "${RED}Error: Failed to create virtual environment${NC}"
         exit 1
