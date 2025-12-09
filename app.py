@@ -376,6 +376,60 @@ class PDFManager:
             self.log(f"Error printing PDF: {str(e)}", logging.ERROR)
             return False, f"Error printing PDF: {str(e)}"
     
+    def export_page_to_png(self, pdf_path: str, page_num: int, output_path: str, dpi: int = 300) -> Tuple[bool, str]:
+        """
+        Export a PDF page to a PNG image file
+        
+        Args:
+            pdf_path: Path to the PDF file
+            page_num: Page number (0-indexed)
+            output_path: Path where the PNG should be saved
+            dpi: Resolution in dots per inch (default: 300)
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        if not PYMUPDF_AVAILABLE:
+            return False, "PyMuPDF is not available"
+        
+        if not os.path.exists(pdf_path):
+            return False, f"PDF file not found: {pdf_path}"
+        
+        try:
+            # Ensure output has .png extension
+            if not output_path.lower().endswith('.png'):
+                output_path += '.png'
+            
+            # Open PDF and get the page
+            doc = fitz.open(pdf_path)
+            
+            if page_num < 0 or page_num >= len(doc):
+                doc.close()
+                return False, f"Invalid page number: {page_num + 1} (PDF has {len(doc)} pages)"
+            
+            page = doc[page_num]
+            
+            # Calculate zoom factor based on DPI
+            # 72 is the default DPI for PDF
+            zoom = dpi / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            
+            # Render page to pixmap
+            pix = page.get_pixmap(matrix=mat)
+            
+            # Save to PNG file
+            pix.save(output_path)
+            
+            doc.close()
+            
+            pdf_name = os.path.basename(pdf_path)
+            self.log(f"Exported page {page_num + 1} from {pdf_name} to {os.path.basename(output_path)}")
+            return True, f"Page {page_num + 1} exported to: {os.path.basename(output_path)}"
+            
+        except Exception as e:
+            self.log(f"Error exporting page to PNG: {str(e)}", logging.ERROR)
+            return False, f"Error exporting page: {str(e)}"
+    
     def get_loaded_pdf_info(self) -> list:
         """
         Get information about all loaded PDFs
@@ -665,6 +719,31 @@ def main(page: ft.Page):
     save_picker = ft.FilePicker(on_result=on_save_picked)
     page.overlay.append(save_picker)
     
+    # PNG export file picker
+    def on_png_export_picked(e: ft.FilePickerResultEvent):
+        if e.path:
+            output_path = e.path
+            if not output_path.lower().endswith('.png'):
+                output_path += '.png'
+            
+            storage.record_function_usage("export_page_to_png")
+            
+            # Use the current preview page
+            if not pdf_manager.current_preview_pdf:
+                update_status("No PDF page selected", True)
+                return
+            
+            success, message = pdf_manager.export_page_to_png(
+                pdf_manager.current_preview_pdf, 
+                current_preview_index,
+                output_path,
+                dpi=300
+            )
+            update_status(message, not success)
+    
+    png_export_picker = ft.FilePicker(on_result=on_png_export_picked)
+    page.overlay.append(png_export_picker)
+    
     def on_open_files_click(e):
         """Handle Open Files button click"""
         file_picker.pick_files(
@@ -722,6 +801,22 @@ def main(page: ft.Page):
         
         update_status(message, not success)
     
+    def on_export_png_click(e):
+        """Handle Export to PNG button click"""
+        if not pdf_manager.current_preview_pdf:
+            update_status("No PDF page selected to export", True)
+            return
+        
+        # Get the PDF filename and page number for default filename
+        pdf_name = os.path.splitext(os.path.basename(pdf_manager.current_preview_pdf))[0]
+        default_filename = f"{pdf_name}_page_{current_preview_index + 1}.png"
+        
+        png_export_picker.save_file(
+            allowed_extensions=["png"],
+            dialog_title="Export Page to PNG",
+            file_name=default_filename
+        )
+    
     # Cleanup on page close
     def on_window_close(e):
         pdf_manager.cleanup()
@@ -752,6 +847,11 @@ def main(page: ft.Page):
             "label": "Print Merged",
             "icon": "🖨️",
             "description": "Merge and print all pages"
+        },
+        "export_page_to_png": {
+            "label": "Export Page to PNG",
+            "icon": "🖼️",
+            "description": "Export current page to PNG image"
         },
         # Placeholder functions for future expansion
         "rotate_pages": {
@@ -870,6 +970,13 @@ def main(page: ft.Page):
                                     "🖨️ Print Merged",
                                     on_click=on_print_merged_click,
                                     icon=ft.Icons.PRINT,
+                                ),
+                                ft.ElevatedButton(
+                                    "🖼️ Export to PNG",
+                                    on_click=on_export_png_click,
+                                    icon=ft.Icons.IMAGE,
+                                    bgcolor=ft.Colors.GREEN_700,
+                                    color=ft.Colors.WHITE,
                                 ),
                             ], spacing=10, wrap=True),
                         ], spacing=5),

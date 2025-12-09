@@ -13,7 +13,8 @@ A Flet-based desktop application for PDF management. Open, display, reorder, mer
 3. **Page Reordering** - Rearrange pages from multiple PDFs using up/down controls
 4. **Merge PDFs** - Combine pages from multiple PDFs into a single output file
 5. **Print PDF** - Print the currently selected PDF or the merged result
-6. **Remove Pages** - Remove individual pages or entire PDFs from the merge list
+6. **Export to PNG** - Export the current page to a high-resolution PNG image (300 DPI)
+7. **Remove Pages** - Remove individual pages or entire PDFs from the merge list
 
 ### Planned Features (Coming Soon)
 
@@ -122,14 +123,21 @@ The "Page Order" section shows all pages from all loaded PDFs:
 - **Print Current** - Prints the currently previewed PDF
 - **Print Merged** - Merges all pages first, then prints the result
 
+### Exporting to PNG
+
+1. Preview the page you want to export
+2. Click **"🖼️ Export to PNG"**
+3. Choose a location and filename for the PNG image
+4. The page will be exported at 300 DPI resolution for high quality
+
 ## Dependencies
 
 See `requirements.txt` for complete list:
-- `flet==0.28.2` - UI framework (pinned to 0.28.2 for macOS compatibility)
+- `flet==0.27.1` - UI framework (pinned to 0.27.1 for macOS/Python 3.14 compatibility)
 - `PyMuPDF>=1.24.0` - PDF handling library
 - `python-dotenv>=1.0.0` - Environment variable management
 
-**Note:** Flet is pinned to version 0.28.2 due to known issues with file picker dialogs on macOS in newer versions.
+**Note:** Flet is pinned to version 0.27.1 due to compatibility issues with file picker dialogs on macOS and Python 3.14 in newer versions.
 
 ## Architecture
 
