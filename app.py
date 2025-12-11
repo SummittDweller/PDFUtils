@@ -544,14 +544,25 @@ class PDFManager:
                 nlp = spacy.load("en_core_web_sm")
                 doc = nlp(text[:10000])  # Limit to first 10k characters
                 
+                # Whitelist of allowed personal names for renaming
+                allowed_names = ["Mark", "Christine", "Mark & Christine", "Mackenzie", "Morgan"]
+                
                 for ent in doc.ents:
                     if ent.label_ == "PERSON":
                         name = ent.text.strip()
-                        if name and len(name) > 3 and name not in result["names"]:
-                            result["names"].append(name)
+                        # Only include if it matches one of the allowed names (case-insensitive)
+                        if name and any(allowed.lower() in name.lower() for allowed in allowed_names):
+                            # Find the matching allowed name and use that exact format
+                            for allowed in allowed_names:
+                                if allowed.lower() in name.lower():
+                                    if allowed not in result["names"]:
+                                        result["names"].append(allowed)
+                                    break
                     elif ent.label_ in ["ORG", "PRODUCT", "FAC"]:
                         org = ent.text.strip()
-                        if org and len(org) > 2 and org not in result["organizations"]:
+                        # Filter out addresses (contains street indicators and numbers)
+                        is_address = bool(re.search(r'\d+\s+(?:W\.|E\.|N\.|S\.|West|East|North|South)?\s*\w+\s+(?:St\.|Street|Ave\.|Avenue|Rd\.|Road|Blvd\.|Boulevard|Dr\.|Drive|Lane|Ln\.|Way)', org, re.IGNORECASE))
+                        if org and len(org) > 2 and org not in result["organizations"] and not is_address:
                             result["organizations"].append(org)
             except Exception as e:
                 self.log(f"Note: spaCy NER not available ({str(e)}). Using basic pattern matching.", logging.INFO)
@@ -572,6 +583,85 @@ class PDFManager:
                 if match not in result["organizations"]:
                     result["organizations"].append(match)
         
+        # Post-process to filter out addresses, gibberish, and invalid entries
+        # More comprehensive address pattern
+        address_patterns = [
+            r'\d+\s+(?:W\.|E\.|N\.|S\.|WEST|EAST|NORTH|SOUTH)?\s*\w+\s+(?:ST\.|STREET|AVE\.|AVENUE|RD\.|ROAD|BLVD\.|BOULEVARD|DR\.|DRIVE|LANE|LN\.|WAY|COURT|CT\.|PLACE|PL\.)'
+        ]
+        
+        filtered_orgs = []
+        for org in result["organizations"]:
+            is_invalid = False
+            org_upper = org.upper()
+            org_clean = org.replace('_', '').replace('-', '').replace(' ', '')
+            
+            # Check against address patterns
+            for addr_pattern in address_patterns:
+                if re.search(addr_pattern, org_upper, re.IGNORECASE):
+                    is_invalid = True
+                    break
+            
+            # Check if it looks like a street address (contains numbers and street words)
+            if re.search(r'\d+.*(?:SUMMIT|STREET|AVENUE|ROAD)', org_upper):
+                is_invalid = True
+            
+            # Check for gibberish patterns:
+            # 1. Single character segments separated by underscores (like I_l_l_l_a_l_l_l_e)
+            segments = org.replace('-', '_').split('_')
+            single_char_segments = sum(1 for seg in segments if len(seg) == 1)
+            if len(segments) > 3 and single_char_segments > len(segments) * 0.5:
+                is_invalid = True
+            
+            # 2. Too many underscores or hyphens overall
+            if org.count('_') > 3 or org.count('-') > 3:
+                is_invalid = True
+            
+            # 3. Alternating single characters (I_l_l_l pattern)
+            if re.match(r'^[a-zA-Z](_[a-zA-Z]){3,}$', org):
+                is_invalid = True
+            
+            # 4. Excessive character repetition (more than 40% of chars are the same letter)
+            if len(org_clean) > 0:
+                char_counts = {}
+                for char in org_clean.lower():
+                    char_counts[char] = char_counts.get(char, 0) + 1
+                max_char_ratio = max(char_counts.values()) / len(org_clean) if char_counts else 0
+                if max_char_ratio > 0.4:
+                    is_invalid = True
+            
+            # 5. Very short organizations (less than 3 chars, likely fragments)
+            if len(org.replace('_', '').replace('-', '').strip()) < 3:
+                is_invalid = True
+            
+            # 6. Contains mostly non-alphanumeric characters
+            alpha_count = sum(1 for c in org if c.isalnum())
+            if len(org) > 0 and alpha_count / len(org) < 0.5:
+                is_invalid = True
+            
+            # 7. Contains mostly single-letter "words" (OCR artifact)
+            words = org.replace('_', ' ').replace('-', ' ').split()
+            single_letter_words = sum(1 for word in words if len(word) == 1)
+            if len(words) > 2 and single_letter_words > len(words) * 0.6:
+                is_invalid = True
+            
+            if not is_invalid:
+                filtered_orgs.append(org)
+        
+        result["organizations"] = filtered_orgs
+        
+        # Whitelist filter for names - only keep allowed family names
+        allowed_names = ["Mark", "Christine", "Mark & Christine", "Mackenzie", "Morgan"]
+        filtered_names = []
+        for name in result["names"]:
+            # Only keep if it's exactly one of the allowed names (case-insensitive match)
+            for allowed in allowed_names:
+                if name.lower() == allowed.lower() or allowed.lower() in name.lower():
+                    if allowed not in filtered_names:
+                        filtered_names.append(allowed)
+                    break
+        
+        result["names"] = filtered_names
+        
         # Sort dates (most recent first)
         result["dates"].sort(reverse=True)
         
@@ -580,6 +670,7 @@ class PDFManager:
     def generate_filename_from_content(self, analysis: Dict[str, any], original_name: str) -> str:
         """
         Generate a suggested filename based on content analysis
+        Format: Organization-for_Name-Date.pdf or Name-Date.pdf
         
         Args:
             analysis: Dictionary from analyze_pdf_content
@@ -589,30 +680,47 @@ class PDFManager:
             Suggested filename
         """
         parts = []
+        person_part = None
         
-        # Add the most recent date if found
+        # Extract and clean organization name
+        if analysis["organizations"]:
+            org = analysis["organizations"][0]
+            # First, normalize all whitespace (including newlines, tabs, carriage returns) to single spaces
+            org = re.sub(r'\s+', ' ', org)
+            # Remove uncommon punctuation and special characters
+            # Keep only alphanumeric, spaces, hyphens, and underscores
+            org = re.sub(r'[?&#@!$%^*+=\[\]{}()<>:;"\',./\\|`~]', '', org)
+            # Replace spaces with underscores and strip leading/trailing whitespace
+            org = org.strip().replace(' ', '_')
+            parts.append(org)
+        
+        # Extract and prepare person name (to be added after organization)
+        if analysis["names"]:
+            name = analysis["names"][0]
+            # First, normalize all whitespace (including newlines, tabs, carriage returns) to single spaces
+            name = re.sub(r'\s+', ' ', name)
+            # Remove uncommon punctuation and special characters
+            name = re.sub(r'[?&#@!$%^*+=\[\]{}()<>:;"\',./\\|`~]', '', name)
+            # Replace spaces with underscores and strip leading/trailing whitespace
+            name = name.strip().replace(' ', '_')
+            # Extract first name only for brevity
+            first_name = name.split('_')[0] if '_' in name else name
+            person_part = f"for_{first_name}"
+        
+        # Add person name after organization (if org exists) or as main part (if no org)
+        if person_part:
+            if parts:  # We have an organization
+                parts.append(person_part)
+            else:  # No organization, use person as main identifier
+                parts.append(person_part.replace('for_', ''))
+        
+        # Add the most recent date at the end
         if analysis["dates"]:
             parts.append(analysis["dates"][0])
         
-        # Add primary organization if found
-        if analysis["organizations"]:
-            org = analysis["organizations"][0]
-            # Clean up organization name
-            org = re.sub(r'[^\w\s-]', '', org)
-            org = org.replace(' ', '_')
-            parts.append(org)
-        
-        # Add primary person name if found and no organization
-        if analysis["names"] and not analysis["organizations"]:
-            name = analysis["names"][0]
-            # Clean up name
-            name = re.sub(r'[^\w\s-]', '', name)
-            name = name.replace(' ', '_')
-            parts.append(name)
-        
         # If we have parts, create the filename
         if parts:
-            suggested_name = "_".join(parts) + ".pdf"
+            suggested_name = "-".join(parts) + ".pdf"
         else:
             # Fall back to original name with a prefix
             suggested_name = "renamed_" + original_name
@@ -1058,6 +1166,27 @@ def main(page: ft.Page):
         # Show dialog to select which PDFs to rename
         show_rename_dialog()
     
+    def on_function_selected(e):
+        """Handle function selection from dropdown"""
+        selected_function = e.control.value
+        
+        # Map function names to their handlers
+        function_handlers = {
+            "merge_pdfs": on_merge_click,
+            "print_pdf": on_print_click,
+            "print_merged": on_print_merged_click,
+            "export_page_to_png": on_export_png_click,
+            "rename_from_content": on_rename_from_content_click,
+        }
+        
+        # Execute the selected function
+        if selected_function in function_handlers:
+            function_handlers[selected_function](e)
+        
+        # Reset dropdown to show placeholder
+        e.control.value = None
+        page.update()
+    
     def show_rename_dialog():
         """Show dialog for renaming PDFs based on content"""
         
@@ -1078,10 +1207,14 @@ def main(page: ft.Page):
             )
             pdf_checkboxes.append(checkbox)
         
-        # Preview area for suggestions
-        preview_text = ft.Text("Select PDFs and click 'Analyze' to see suggested names", 
-                              size=12, 
-                              color=ft.Colors.GREY_700)
+        # Preview area for suggestions (using Column for scrollability)
+        preview_column = ft.Column(
+            [ft.Text("Select PDFs and click 'Analyze' to see suggested names", 
+                    size=12, 
+                    color=ft.Colors.GREY_700)],
+            spacing=5,
+            scroll=ft.ScrollMode.AUTO,
+        )
         
         analysis_results = {}
         
@@ -1089,12 +1222,19 @@ def main(page: ft.Page):
             """Analyze selected PDFs and show suggestions"""
             selected_paths = [cb.data for cb in pdf_checkboxes if cb.value]
             
+            preview_column.controls.clear()
+            
             if not selected_paths:
-                preview_text.value = "No PDFs selected"
+                preview_column.controls.append(
+                    ft.Text("No PDFs selected", size=12, color=ft.Colors.GREY_700)
+                )
                 page.update()
                 return
             
-            preview_lines = ["Suggested names:\n"]
+            preview_column.controls.append(
+                ft.Text("Suggested names:", size=13, weight=ft.FontWeight.BOLD)
+            )
+            
             analysis_results.clear()
             
             for pdf_path in selected_paths:
@@ -1108,8 +1248,15 @@ def main(page: ft.Page):
                     suggested = analysis["suggested_name"]
                     analysis_results[pdf_path] = analysis
                     
-                    preview_lines.append(f"\n• {original}")
-                    preview_lines.append(f"  → {suggested}")
+                    # Add original filename
+                    preview_column.controls.append(
+                        ft.Text(f"• {original}", size=12, weight=ft.FontWeight.BOLD)
+                    )
+                    
+                    # Add suggested filename
+                    preview_column.controls.append(
+                        ft.Text(f"  → {suggested}", size=12, color=ft.Colors.BLUE_700)
+                    )
                     
                     # Show what was found
                     found_items = []
@@ -1121,9 +1268,24 @@ def main(page: ft.Page):
                         found_items.append(f"Names: {', '.join(analysis['names'][:2])}")
                     
                     if found_items:
-                        preview_lines.append(f"  ({'; '.join(found_items)})")
+                        preview_column.controls.append(
+                            ft.Text(f"  ({'; '.join(found_items)})", 
+                                   size=11, 
+                                   color=ft.Colors.GREY_600,
+                                   italic=True)
+                        )
+                    
+                    # Add spacing between entries
+                    preview_column.controls.append(ft.Container(height=10))
             
-            preview_text.value = "\n".join(preview_lines) if len(preview_lines) > 1 else "No content found to generate names"
+            if not analysis_results:
+                preview_column.controls.clear()
+                preview_column.controls.append(
+                    ft.Text("No content found to generate names", 
+                           size=12, 
+                           color=ft.Colors.ORANGE_700)
+                )
+            
             page.update()
         
         def confirm_rename(e):
@@ -1187,7 +1349,7 @@ def main(page: ft.Page):
                     ),
                     ft.Divider(),
                     ft.Container(
-                        content=preview_text,
+                        content=preview_column,
                         padding=10,
                         bgcolor=ft.Colors.GREY_100,
                         border_radius=5,
@@ -1214,10 +1376,37 @@ def main(page: ft.Page):
     
     page.on_close = on_window_close
     
+    # Helper function to get sorted functions by usage
+    def get_sorted_functions():
+        """Get functions sorted by last used time"""
+        # Available active functions
+        active_functions = [
+            "merge_pdfs",
+            "print_pdf", 
+            "print_merged",
+            "export_page_to_png",
+            "rename_from_content",
+        ]
+        
+        # Get usage data and sort
+        function_usage = []
+        for func_name in active_functions:
+            usage = storage.get_function_usage(func_name)
+            last_used = usage.get("last_used")
+            function_usage.append({
+                "name": func_name,
+                "last_used": last_used,
+                "count": usage.get("count", 0)
+            })
+        
+        # Sort by last_used (None values go to end), then by name
+        function_usage.sort(key=lambda x: (x["last_used"] is None, x["last_used"] or ""), reverse=True)
+        
+        return function_usage
+    
     # Function definitions with metadata for future extensibility.
     # This dictionary documents available and planned functions.
     # Used with storage.record_function_usage() to track usage patterns.
-    # Can be expanded for a dropdown selector similar to CABB pattern.
     available_functions = {
         "open_pdfs": {
             "label": "Open PDF Files",
@@ -1345,78 +1534,29 @@ def main(page: ft.Page):
                         border_radius=10,
                     ),
                     
-                    # Merge & Print section
+                    # Operations section with dropdown
                     ft.Container(
                         content=ft.Column([
-                            ft.Text("Output Operations", size=16, weight=ft.FontWeight.BOLD),
-                            ft.Row([
-                                ft.ElevatedButton(
-                                    "🔗 Merge & Save",
-                                    on_click=on_merge_click,
-                                    icon=ft.Icons.MERGE,
-                                    bgcolor=ft.Colors.BLUE_700,
-                                    color=ft.Colors.WHITE,
-                                ),
-                                ft.ElevatedButton(
-                                    "🖨️ Print Current",
-                                    on_click=on_print_click,
-                                    icon=ft.Icons.PRINT,
-                                ),
-                                ft.ElevatedButton(
-                                    "🖨️ Print Merged",
-                                    on_click=on_print_merged_click,
-                                    icon=ft.Icons.PRINT,
-                                ),
-                                ft.ElevatedButton(
-                                    "🖼️ Export to PNG",
-                                    on_click=on_export_png_click,
-                                    icon=ft.Icons.IMAGE,
-                                    bgcolor=ft.Colors.GREEN_700,
-                                    color=ft.Colors.WHITE,
-                                ),
-                            ], spacing=10, wrap=True),
-                            ft.Row([
-                                ft.ElevatedButton(
-                                    "🏷️ Rename from Content",
-                                    on_click=on_rename_from_content_click,
-                                    icon=ft.Icons.LABEL,
-                                    bgcolor=ft.Colors.ORANGE_700,
-                                    color=ft.Colors.WHITE,
-                                    tooltip="Analyze PDF content and suggest filenames based on dates, names, and organizations",
-                                ),
-                            ], spacing=10, wrap=True),
-                        ], spacing=5),
-                        padding=10,
-                        bgcolor=ft.Colors.GREY_50,
-                        border_radius=10,
-                    ),
-                    
-                    # Future Functions placeholder
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text("Additional Functions (Coming Soon)", size=16, weight=ft.FontWeight.BOLD),
-                            ft.Row([
-                                ft.ElevatedButton(
-                                    "🔄 Rotate",
-                                    disabled=True,
-                                    tooltip="Coming soon",
-                                ),
-                                ft.ElevatedButton(
-                                    "📤 Extract",
-                                    disabled=True,
-                                    tooltip="Coming soon",
-                                ),
-                                ft.ElevatedButton(
-                                    "✂️ Split",
-                                    disabled=True,
-                                    tooltip="Coming soon",
-                                ),
-                                ft.ElevatedButton(
-                                    "📦 Compress",
-                                    disabled=True,
-                                    tooltip="Coming soon",
-                                ),
-                            ], spacing=10, wrap=True),
+                            ft.Text("Operations", size=16, weight=ft.FontWeight.BOLD),
+                            ft.Dropdown(
+                                label="Select an operation",
+                                hint_text="Choose a function to execute...",
+                                width=400,
+                                on_change=on_function_selected,
+                                options=[
+                                    ft.dropdown.Option(
+                                        key=func["name"],
+                                        text=f"{available_functions[func['name']]['icon']} {available_functions[func['name']]['label']}" + 
+                                             (f" (used {func['count']}x)" if func['count'] > 0 else "")
+                                    ) for func in get_sorted_functions()
+                                ],
+                            ),
+                            ft.Text(
+                                "Functions are ordered by most recently used",
+                                size=11,
+                                color=ft.Colors.GREY_600,
+                                italic=True,
+                            ),
                         ], spacing=5),
                         padding=10,
                         bgcolor=ft.Colors.GREY_50,

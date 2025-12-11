@@ -15,7 +15,8 @@ A Flet-based desktop application for PDF management. Open, display, reorder, mer
 5. **Print PDF** - Print the currently selected PDF or the merged result
 6. **Export to PNG** - Export the current page to a high-resolution PNG image (300 DPI)
 7. **Remove Pages** - Remove individual pages or entire PDFs from the merge list
-8. **Rename from Content** - Intelligently rename PDF files based on content by extracting dates, personal names, and service provider names from the document
+8. **Rename from Content** - Intelligently rename PDF files based on content by extracting dates, personal names, and service provider names from the document with advanced filtering for clean filenames
+9. **Usage-Based Function Menu** - Dropdown menu that automatically reorders functions based on frequency of use for improved workflow efficiency
 
 ### Planned Features (Coming Soon)
 
@@ -141,12 +142,31 @@ The "Rename from Content" feature intelligently analyzes PDF content and suggest
 **To use this feature:**
 
 1. Load one or more PDF files
-2. Click **"🏷️ Rename from Content"**
+2. Select **"Rename from Content"** from the functions dropdown menu
 3. Select which PDFs to analyze (all are selected by default)
 4. Click **"Analyze"** to see suggested filenames
-5. Review the suggestions and click **"Rename"** to apply
+5. Review the suggestions in the scrollable preview pane
+6. Click **"Rename"** to apply the changes
 
-**Suggested filename format:** `YYYY-MM-DD_Organization_Name.pdf`
+**Suggested filename format:** `Organization-for_FirstName-YYYY-MM-DD.pdf`
+- Example: `Mercy_Medical_Center-for_Mark-2025-09-23.pdf`
+- If no organization is found: `FirstName-YYYY-MM-DD.pdf`
+- If no data is found: `renamed_[original-filename].pdf`
+
+**Smart Filtering:**
+The rename function includes comprehensive filtering to ensure clean, filesystem-friendly filenames:
+- **Name Whitelist** - Only uses family member names: Mark, Christine, Mark & Christine, Mackenzie, Morgan
+- **Address Filtering** - Excludes street addresses and specific locations from organization names
+- **Gibberish Detection** - Removes OCR artifacts and malformed text using 7 validation checks:
+  - Single-character segments (e.g., "I_l_l_l_a")
+  - Excessive separators or underscores
+  - Character repetition patterns
+  - Non-alphanumeric character ratio
+  - Fragment size validation
+  - Single-letter word detection
+  - Alternating character patterns
+- **Punctuation Sanitization** - Removes uncommon punctuation (?, &, #, @, !, $, %, etc.) that can cause filesystem issues
+- **Whitespace Normalization** - Converts all whitespace (newlines, tabs, carriage returns) to underscores
 
 **Note:** For best results with name extraction, install the spaCy English model:
 ```bash
@@ -225,6 +245,12 @@ To add new PDF operations:
 - **Linux**: Ensure `lpr` is installed and configured
 - **Windows**: PDF should open in the default PDF viewer with print dialog
 - Check that you have a printer configured on your system
+
+### Rename from Content issues
+- **Missing names/organizations**: Install spaCy model: `python -m spacy download en_core_web_sm`
+- **Incorrect names**: Only family member names (Mark, Christine, Mark & Christine, Mackenzie, Morgan) are used by design
+- **Strange characters in filename**: Recent updates filter punctuation, whitespace, and gibberish - update to latest version
+- **Address appearing as organization**: Address filtering is active for known locations; report new cases for filtering
 
 ## Related Tools
 
