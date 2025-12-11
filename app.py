@@ -1399,8 +1399,11 @@ def main(page: ft.Page):
                 "count": usage.get("count", 0)
             })
         
-        # Sort by last_used (None values go to end), then by name
-        function_usage.sort(key=lambda x: (x["last_used"] is None, x["last_used"] or ""), reverse=True)
+        # Sort by last_used (most recent first, None values go to end)
+        # Key: (False for has timestamp, True for None) puts None at end when sorting ascending
+        # Then sort by timestamp descending (most recent first)
+        function_usage.sort(key=lambda x: (x["last_used"] is None, -(float('inf') if x["last_used"] is None else 
+                                                                       datetime.fromisoformat(x["last_used"]).timestamp())))
         
         return function_usage
     
@@ -1468,7 +1471,7 @@ def main(page: ft.Page):
             ft.Text("📄 PDFUtils - PDF Management Tool", 
                    size=24, 
                    weight=ft.FontWeight.BOLD),
-            ft.Text("Open, display, reorder, merge, print, and smartly rename PDF files",
+            ft.Text("Open, display, reorder, merge, convert to image, print, and smartly rename PDF files",
                    size=14,
                    color=ft.Colors.GREY_700),
             ft.Divider(height=5),
