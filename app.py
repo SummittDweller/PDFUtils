@@ -54,7 +54,7 @@ logging.getLogger('flet_core').setLevel(logging.WARNING)
 logging.getLogger('flet_desktop').setLevel(logging.WARNING)
 
 # Persistent storage file
-PERSISTENCE_FILE = "pdfutils_persistent.json"
+PERSISTENCE_FILE = "persistent.json"
 
 
 class PersistentStorage:
@@ -1468,7 +1468,7 @@ def main(page: ft.Page):
             ft.Text("📄 PDFUtils - PDF Management Tool", 
                    size=24, 
                    weight=ft.FontWeight.BOLD),
-            ft.Text("Open, display, reorder, merge, and print PDF files",
+            ft.Text("Open, display, reorder, merge, print, and smartly rename PDF files",
                    size=14,
                    color=ft.Colors.GREY_700),
             ft.Divider(height=5),
