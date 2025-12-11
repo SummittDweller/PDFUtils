@@ -768,9 +768,19 @@ class PDFManager:
         directory = os.path.dirname(pdf_path)
         new_path = os.path.join(directory, final_name)
         
-        # Check if file already exists
-        if os.path.exists(new_path) and new_path != pdf_path:
-            return False, f"File already exists: {final_name}", analysis
+        # Check if the name is the same (no change needed)
+        if new_path == pdf_path:
+            return False, f"Filename unchanged: {final_name}", analysis
+        
+        # Check if file already exists - if so, add a number suffix
+        if os.path.exists(new_path):
+            base_name, ext = os.path.splitext(final_name)
+            counter = 1
+            while os.path.exists(new_path):
+                final_name = f"{base_name}_{counter}{ext}"
+                new_path = os.path.join(directory, final_name)
+                counter += 1
+            self.log(f"File exists, using alternate name: {final_name}")
         
         # Rename the file
         try:
@@ -1290,7 +1300,9 @@ def main(page: ft.Page):
         
         def confirm_rename(e):
             """Perform the actual rename operation"""
+            logger.info("confirm_rename called")
             selected_paths = [cb.data for cb in pdf_checkboxes if cb.value]
+            logger.info(f"Selected paths: {selected_paths}")
             
             if not selected_paths:
                 update_status("No PDFs selected", True)
@@ -1298,22 +1310,49 @@ def main(page: ft.Page):
                 page.update()
                 return
             
+            # Check if analysis has been run
+            logger.info(f"Analysis results: {list(analysis_results.keys())}")
+            if not analysis_results:
+                update_status("Please click 'Analyze' first to generate suggested names", True)
+                logger.warning("No analysis results found")
+                return
+            
             success_count = 0
             failed_count = 0
+            error_messages = []
             
             for pdf_path in selected_paths:
                 analysis = analysis_results.get(pdf_path)
+                logger.info(f"Processing {pdf_path}, analysis found: {analysis is not None}")
                 if analysis and analysis.get("suggested_name"):
+                    suggested = analysis["suggested_name"]
+                    logger.info(f"Suggested name for {os.path.basename(pdf_path)}: {suggested}")
+                    
+                    # Check if suggested name is valid
+                    if not suggested or suggested.strip() == "" or suggested == os.path.basename(pdf_path):
+                        logger.warning(f"Skipping {pdf_path}: invalid or unchanged name '{suggested}'")
+                        failed_count += 1
+                        error_messages.append(f"{os.path.basename(pdf_path)}: No valid name generated")
+                        continue
+                    
+                    logger.info(f"Attempting rename: {os.path.basename(pdf_path)} -> {suggested}")
                     success, message, _ = pdf_manager.rename_pdf_from_content(
                         pdf_path,
-                        new_name=analysis["suggested_name"],
+                        new_name=suggested,
                         dry_run=False
                     )
+                    logger.info(f"Rename result: success={success}, message={message}")
                     
                     if success:
                         success_count += 1
                     else:
                         failed_count += 1
+                        error_messages.append(f"{os.path.basename(pdf_path)}: {message}")
+                        logger.error(f"Rename failed for {pdf_path}: {message}")
+                else:
+                    failed_count += 1
+                    error_messages.append(f"{os.path.basename(pdf_path)}: No analysis found")
+                    logger.warning(f"No analysis found for {pdf_path}")
             
             # Update UI
             update_pdf_list()
@@ -1325,7 +1364,11 @@ def main(page: ft.Page):
             if failed_count == 0:
                 update_status(f"Successfully renamed {success_count} file(s)")
             else:
-                update_status(f"Renamed {success_count} file(s), {failed_count} failed", True)
+                error_summary = "; ".join(error_messages[:2])  # Show first 2 errors
+                if len(error_messages) > 2:
+                    error_summary += f" (+{len(error_messages) - 2} more)"
+                update_status(f"Renamed {success_count} file(s), {failed_count} failed: {error_summary}", True)
+                logger.error(f"Rename summary: {success_count} succeeded, {failed_count} failed. Errors: {error_messages}")
         
         def close_dialog(e):
             rename_dialog.open = False
