@@ -11,9 +11,11 @@ import tempfile
 import shutil
 import platform
 import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple, List, Dict, Optional
+from dateutil import parser as date_parser
 
 # Try to import PyMuPDF (fitz), provide fallback error message
 try:
@@ -21,6 +23,13 @@ try:
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
+
+# Try to import spaCy for NER
+try:
+    import spacy
+    SPACY_AVAILABLE = True
+except ImportError:
+    SPACY_AVAILABLE = False
 
 # Configure logging
 # Ensure logfiles directory exists
@@ -457,6 +466,227 @@ class PDFManager:
                     "page_count": 0
                 })
         return info_list
+    
+    def extract_text_from_pdf(self, pdf_path: str, max_pages: int = 3) -> str:
+        """
+        Extract text from the first few pages of a PDF
+        
+        Args:
+            pdf_path: Path to the PDF file
+            max_pages: Maximum number of pages to extract text from
+            
+        Returns:
+            Extracted text as a string
+        """
+        if not PYMUPDF_AVAILABLE:
+            return ""
+        
+        try:
+            doc = fitz.open(pdf_path)
+            text = ""
+            pages_to_extract = min(max_pages, len(doc))
+            
+            for page_num in range(pages_to_extract):
+                page = doc[page_num]
+                text += page.get_text()
+            
+            doc.close()
+            return text
+        except Exception as e:
+            self.log(f"Error extracting text: {str(e)}", logging.ERROR)
+            return ""
+    
+    def analyze_pdf_content(self, pdf_path: str) -> Dict[str, any]:
+        """
+        Analyze PDF content to extract dates, names, and organizations
+        
+        Args:
+            pdf_path: Path to the PDF file
+            
+        Returns:
+            Dictionary containing found dates, names, and organizations
+        """
+        text = self.extract_text_from_pdf(pdf_path, max_pages=3)
+        
+        if not text:
+            return {"dates": [], "names": [], "organizations": []}
+        
+        result = {
+            "dates": [],
+            "names": [],
+            "organizations": []
+        }
+        
+        # Extract dates using regex patterns
+        date_patterns = [
+            r'\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b',  # MM/DD/YYYY or MM-DD-YYYY
+            r'\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b',    # YYYY-MM-DD
+            r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4}\b',  # Month DD, YYYY
+            r'\b\d{1,2} (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{4}\b'  # DD Month YYYY
+        ]
+        
+        for pattern in date_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                try:
+                    # Try to parse the date
+                    parsed_date = date_parser.parse(match, fuzzy=True)
+                    date_str = parsed_date.strftime("%Y-%m-%d")
+                    if date_str not in result["dates"]:
+                        result["dates"].append(date_str)
+                except:
+                    pass
+        
+        # Use spaCy for named entity recognition if available
+        if SPACY_AVAILABLE:
+            try:
+                # Try to load the model, but don't fail if it's not available
+                nlp = spacy.load("en_core_web_sm")
+                doc = nlp(text[:10000])  # Limit to first 10k characters
+                
+                for ent in doc.ents:
+                    if ent.label_ == "PERSON":
+                        name = ent.text.strip()
+                        if name and len(name) > 3 and name not in result["names"]:
+                            result["names"].append(name)
+                    elif ent.label_ in ["ORG", "PRODUCT", "FAC"]:
+                        org = ent.text.strip()
+                        if org and len(org) > 2 and org not in result["organizations"]:
+                            result["organizations"].append(org)
+            except Exception as e:
+                self.log(f"Note: spaCy NER not available ({str(e)}). Using basic pattern matching.", logging.INFO)
+        
+        # Fallback: Use simple pattern matching for common service providers
+        common_providers = [
+            r'\b(?:Verizon|AT&T|T-Mobile|Sprint|Comcast|Xfinity|Cox|Spectrum)\b',
+            r'\b(?:Amazon|Microsoft|Google|Apple|Facebook|Meta|Netflix)\b',
+            r'\b(?:Bank of America|Wells Fargo|Chase|Citibank|Capital One|US Bank)\b',
+            r'\b(?:Kaiser|Blue Cross|Blue Shield|Aetna|United Healthcare|Cigna|Humana)\b',
+            r'\b(?:PG&E|Edison|Duke Energy|ConEd|National Grid)\b',
+            r'\b(?:State Farm|Geico|Progressive|Allstate|Farmers)\b'
+        ]
+        
+        for pattern in common_providers:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                if match not in result["organizations"]:
+                    result["organizations"].append(match)
+        
+        # Sort dates (most recent first)
+        result["dates"].sort(reverse=True)
+        
+        return result
+    
+    def generate_filename_from_content(self, analysis: Dict[str, any], original_name: str) -> str:
+        """
+        Generate a suggested filename based on content analysis
+        
+        Args:
+            analysis: Dictionary from analyze_pdf_content
+            original_name: Original filename
+            
+        Returns:
+            Suggested filename
+        """
+        parts = []
+        
+        # Add the most recent date if found
+        if analysis["dates"]:
+            parts.append(analysis["dates"][0])
+        
+        # Add primary organization if found
+        if analysis["organizations"]:
+            org = analysis["organizations"][0]
+            # Clean up organization name
+            org = re.sub(r'[^\w\s-]', '', org)
+            org = org.replace(' ', '_')
+            parts.append(org)
+        
+        # Add primary person name if found and no organization
+        if analysis["names"] and not analysis["organizations"]:
+            name = analysis["names"][0]
+            # Clean up name
+            name = re.sub(r'[^\w\s-]', '', name)
+            name = name.replace(' ', '_')
+            parts.append(name)
+        
+        # If we have parts, create the filename
+        if parts:
+            suggested_name = "_".join(parts) + ".pdf"
+        else:
+            # Fall back to original name with a prefix
+            suggested_name = "renamed_" + original_name
+        
+        # Clean up the filename
+        suggested_name = re.sub(r'[<>:"/\\|?*]', '', suggested_name)
+        
+        return suggested_name
+    
+    def rename_pdf_from_content(self, pdf_path: str, new_name: str = None, dry_run: bool = False) -> Tuple[bool, str, Dict]:
+        """
+        Rename a PDF file based on its content
+        
+        Args:
+            pdf_path: Path to the PDF file
+            new_name: Optional custom name to use (if None, will auto-generate)
+            dry_run: If True, only return suggestions without renaming
+            
+        Returns:
+            tuple: (success: bool, message: str, analysis: dict with suggested name)
+        """
+        if not PYMUPDF_AVAILABLE:
+            return False, "PyMuPDF library not available", {}
+        
+        if not os.path.exists(pdf_path):
+            return False, f"File not found: {pdf_path}", {}
+        
+        # Analyze content
+        self.log(f"Analyzing content of {os.path.basename(pdf_path)}...")
+        analysis = self.analyze_pdf_content(pdf_path)
+        
+        # Generate suggested filename
+        original_name = os.path.basename(pdf_path)
+        suggested_name = self.generate_filename_from_content(analysis, original_name)
+        
+        analysis["suggested_name"] = suggested_name
+        
+        if dry_run:
+            return True, f"Suggested name: {suggested_name}", analysis
+        
+        # Use custom name if provided, otherwise use suggested
+        final_name = new_name if new_name else suggested_name
+        
+        # Build new path
+        directory = os.path.dirname(pdf_path)
+        new_path = os.path.join(directory, final_name)
+        
+        # Check if file already exists
+        if os.path.exists(new_path) and new_path != pdf_path:
+            return False, f"File already exists: {final_name}", analysis
+        
+        # Rename the file
+        try:
+            os.rename(pdf_path, new_path)
+            
+            # Update internal references
+            if pdf_path in self.loaded_pdfs:
+                idx = self.loaded_pdfs.index(pdf_path)
+                self.loaded_pdfs[idx] = new_path
+            
+            # Update page references
+            self.pdf_pages = [(idx, page, new_path if path == pdf_path else path) 
+                             for idx, page, path in self.pdf_pages]
+            
+            # Update current preview
+            if self.current_preview_pdf == pdf_path:
+                self.current_preview_pdf = new_path
+            
+            self.log(f"Renamed: {original_name} → {final_name}")
+            return True, f"Successfully renamed to: {final_name}", analysis
+            
+        except Exception as e:
+            self.log(f"Error renaming file: {str(e)}", logging.ERROR)
+            return False, f"Error renaming file: {str(e)}", analysis
 
 
 def main(page: ft.Page):
@@ -817,6 +1047,167 @@ def main(page: ft.Page):
             file_name=default_filename
         )
     
+    def on_rename_from_content_click(e):
+        """Handle Rename from Content button click"""
+        storage.record_function_usage("rename_from_content")
+        
+        if not pdf_manager.loaded_pdfs:
+            update_status("No PDFs loaded to rename", True)
+            return
+        
+        # Show dialog to select which PDFs to rename
+        show_rename_dialog()
+    
+    def show_rename_dialog():
+        """Show dialog for renaming PDFs based on content"""
+        
+        # Get all loaded PDFs
+        pdf_infos = pdf_manager.get_loaded_pdf_info()
+        
+        if not pdf_infos:
+            update_status("No PDFs loaded", True)
+            return
+        
+        # Create checkbox list for PDF selection
+        pdf_checkboxes = []
+        for info in pdf_infos:
+            checkbox = ft.Checkbox(
+                label=info['name'],
+                value=True,
+                data=info['path']
+            )
+            pdf_checkboxes.append(checkbox)
+        
+        # Preview area for suggestions
+        preview_text = ft.Text("Select PDFs and click 'Analyze' to see suggested names", 
+                              size=12, 
+                              color=ft.Colors.GREY_700)
+        
+        analysis_results = {}
+        
+        def analyze_selected(e):
+            """Analyze selected PDFs and show suggestions"""
+            selected_paths = [cb.data for cb in pdf_checkboxes if cb.value]
+            
+            if not selected_paths:
+                preview_text.value = "No PDFs selected"
+                page.update()
+                return
+            
+            preview_lines = ["Suggested names:\n"]
+            analysis_results.clear()
+            
+            for pdf_path in selected_paths:
+                success, message, analysis = pdf_manager.rename_pdf_from_content(
+                    pdf_path, 
+                    dry_run=True
+                )
+                
+                if success and analysis.get("suggested_name"):
+                    original = os.path.basename(pdf_path)
+                    suggested = analysis["suggested_name"]
+                    analysis_results[pdf_path] = analysis
+                    
+                    preview_lines.append(f"\n• {original}")
+                    preview_lines.append(f"  → {suggested}")
+                    
+                    # Show what was found
+                    found_items = []
+                    if analysis.get("dates"):
+                        found_items.append(f"Dates: {', '.join(analysis['dates'][:2])}")
+                    if analysis.get("organizations"):
+                        found_items.append(f"Orgs: {', '.join(analysis['organizations'][:2])}")
+                    if analysis.get("names"):
+                        found_items.append(f"Names: {', '.join(analysis['names'][:2])}")
+                    
+                    if found_items:
+                        preview_lines.append(f"  ({'; '.join(found_items)})")
+            
+            preview_text.value = "\n".join(preview_lines) if len(preview_lines) > 1 else "No content found to generate names"
+            page.update()
+        
+        def confirm_rename(e):
+            """Perform the actual rename operation"""
+            selected_paths = [cb.data for cb in pdf_checkboxes if cb.value]
+            
+            if not selected_paths:
+                update_status("No PDFs selected", True)
+                rename_dialog.open = False
+                page.update()
+                return
+            
+            success_count = 0
+            failed_count = 0
+            
+            for pdf_path in selected_paths:
+                analysis = analysis_results.get(pdf_path)
+                if analysis and analysis.get("suggested_name"):
+                    success, message, _ = pdf_manager.rename_pdf_from_content(
+                        pdf_path,
+                        new_name=analysis["suggested_name"],
+                        dry_run=False
+                    )
+                    
+                    if success:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+            
+            # Update UI
+            update_pdf_list()
+            update_page_order_list()
+            
+            rename_dialog.open = False
+            page.update()
+            
+            if failed_count == 0:
+                update_status(f"Successfully renamed {success_count} file(s)")
+            else:
+                update_status(f"Renamed {success_count} file(s), {failed_count} failed", True)
+        
+        def close_dialog(e):
+            rename_dialog.open = False
+            page.update()
+        
+        # Create dialog
+        rename_dialog = ft.AlertDialog(
+            title=ft.Text("🏷️ Rename PDFs from Content"),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Select PDFs to rename based on their content:", 
+                           size=14, 
+                           weight=ft.FontWeight.BOLD),
+                    ft.Container(
+                        content=ft.Column(
+                            pdf_checkboxes,
+                            spacing=5,
+                            scroll=ft.ScrollMode.AUTO,
+                        ),
+                        height=200,
+                    ),
+                    ft.Divider(),
+                    ft.Container(
+                        content=preview_text,
+                        padding=10,
+                        bgcolor=ft.Colors.GREY_100,
+                        border_radius=5,
+                        height=200,
+                    ),
+                ], spacing=10),
+                width=600,
+            ),
+            actions=[
+                ft.TextButton("Analyze", on_click=analyze_selected),
+                ft.TextButton("Rename", on_click=confirm_rename),
+                ft.TextButton("Cancel", on_click=close_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        page.overlay.append(rename_dialog)
+        rename_dialog.open = True
+        page.update()
+    
     # Cleanup on page close
     def on_window_close(e):
         pdf_manager.cleanup()
@@ -852,6 +1243,11 @@ def main(page: ft.Page):
             "label": "Export Page to PNG",
             "icon": "🖼️",
             "description": "Export current page to PNG image"
+        },
+        "rename_from_content": {
+            "label": "Rename from Content",
+            "icon": "🏷️",
+            "description": "Rename PDFs based on dates, names, and organizations found in content"
         },
         # Placeholder functions for future expansion
         "rotate_pages": {
@@ -977,6 +1373,16 @@ def main(page: ft.Page):
                                     icon=ft.Icons.IMAGE,
                                     bgcolor=ft.Colors.GREEN_700,
                                     color=ft.Colors.WHITE,
+                                ),
+                            ], spacing=10, wrap=True),
+                            ft.Row([
+                                ft.ElevatedButton(
+                                    "🏷️ Rename from Content",
+                                    on_click=on_rename_from_content_click,
+                                    icon=ft.Icons.LABEL,
+                                    bgcolor=ft.Colors.ORANGE_700,
+                                    color=ft.Colors.WHITE,
+                                    tooltip="Analyze PDF content and suggest filenames based on dates, names, and organizations",
                                 ),
                             ], spacing=10, wrap=True),
                         ], spacing=5),

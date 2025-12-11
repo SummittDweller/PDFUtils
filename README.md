@@ -15,6 +15,7 @@ A Flet-based desktop application for PDF management. Open, display, reorder, mer
 5. **Print PDF** - Print the currently selected PDF or the merged result
 6. **Export to PNG** - Export the current page to a high-resolution PNG image (300 DPI)
 7. **Remove Pages** - Remove individual pages or entire PDFs from the merge list
+8. **Rename from Content** - Intelligently rename PDF files based on content by extracting dates, personal names, and service provider names from the document
 
 ### Planned Features (Coming Soon)
 
@@ -130,12 +131,36 @@ The "Page Order" section shows all pages from all loaded PDFs:
 3. Choose a location and filename for the PNG image
 4. The page will be exported at 300 DPI resolution for high quality
 
+### Renaming from Content
+
+The "Rename from Content" feature intelligently analyzes PDF content and suggests filenames based on:
+- **Dates** - Extracts dates in various formats (MM/DD/YYYY, YYYY-MM-DD, Month DD YYYY, etc.)
+- **Personal Names** - Identifies people's names using Named Entity Recognition (when spaCy is installed)
+- **Service Providers** - Detects common organizations like banks, insurance companies, utilities, and tech companies
+
+**To use this feature:**
+
+1. Load one or more PDF files
+2. Click **"🏷️ Rename from Content"**
+3. Select which PDFs to analyze (all are selected by default)
+4. Click **"Analyze"** to see suggested filenames
+5. Review the suggestions and click **"Rename"** to apply
+
+**Suggested filename format:** `YYYY-MM-DD_Organization_Name.pdf`
+
+**Note:** For best results with name extraction, install the spaCy English model:
+```bash
+python -m spacy download en_core_web_sm
+```
+
 ## Dependencies
 
 See `requirements.txt` for complete list:
 - `flet==0.27.1` - UI framework (pinned to 0.27.1 for macOS/Python 3.14 compatibility)
 - `PyMuPDF>=1.24.0` - PDF handling library
 - `python-dotenv>=1.0.0` - Environment variable management
+- `spacy>=3.7.0` - Natural Language Processing for Named Entity Recognition
+- `python-dateutil>=2.8.0` - Advanced date parsing
 
 **Note:** Flet is pinned to version 0.27.1 due to compatibility issues with file picker dialogs on macOS and Python 3.14 in newer versions.
 
@@ -200,6 +225,53 @@ To add new PDF operations:
 - **Linux**: Ensure `lpr` is installed and configured
 - **Windows**: PDF should open in the default PDF viewer with print dialog
 - Check that you have a printer configured on your system
+
+## Related Tools
+
+### ScanRenamer Background Application
+
+A companion background application that automatically renames scanned PDF files with timestamps when they appear in a watched folder.
+
+**Application Location:**
+- `~/Applications/ScanRenamer.app` - Standalone macOS application that runs at startup
+
+**Setup Files:**
+- `~/Desktop/SCANRENAMER-APP-INSTRUCTIONS.txt` - Complete setup and usage instructions
+- `~/Desktop/rename-scan-instructions.md` - Detailed documentation with alternative solutions
+
+**What It Does:**
+- Runs invisibly in the background
+- Monitors `~/Desktop/Recently-Scanned` folder every 2 seconds
+- Automatically renames any file named `Scan.pdf` to `Scan_YYYY-MM-DD_HHMMSS.pdf`
+- Logs all activity to `~/Library/Logs/ScanRenamer.log`
+
+**Quick Setup:**
+1. Open System Settings → General → Login Items
+2. Click the "+" button under "Open at Login"
+3. Navigate to your home folder → Applications
+4. Select `ScanRenamer.app` and click "Open"
+5. The app will now start automatically at login
+
+**Manual Start/Stop:**
+```bash
+# Start the app
+open ~/Applications/ScanRenamer.app
+
+# Stop the app
+pkill -f ScanRenamer
+
+# View logs
+tail -f ~/Library/Logs/ScanRenamer.log
+```
+
+**Testing:**
+Copy a file named `Scan.pdf` to `~/Desktop/Recently-Scanned` and it will be automatically renamed within 2 seconds.
+
+**Alternative Solutions:**
+The `rename-scan-instructions.md` file also includes:
+- Automator Folder Action workflow
+- Manual Shortcuts workflow (run on demand)
+- Python + launchd solution for continuous monitoring
 
 ## Acknowledgments
 
